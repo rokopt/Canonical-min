@@ -8,7 +8,7 @@ instance : MonadLiftT CanonicalM DfsM where
   monadLift m s := do m s
 
 mutual
-  partial def Canonical.Term.toTerm (t : Canonical.Term) (ctx : List (Array String) := []) : CanonicalM MVar := do
+  partial def Canonical.Expr.toTerm (t : Canonical.Expr) (ctx : List (Array String) := []) : CanonicalM MVar := do
     let names := t.lets.map (·.name) ++ t.params.map (·.name)
     t.spine.toSpine (if names.isEmpty then ctx else names :: ctx) names
 
@@ -23,16 +23,15 @@ mutual
     pure ⟨size, [], names⟩
 end
 
-partial def Canonical.Typ.toType (ty : Canonical.Typ) (ctx : List (Array String) := []) : CanonicalM TypeMVar := do
-  let preferredNames := ty.lets.map (·.name) ++ ty.params.map (·.name)
-  let types := ty.letTypes ++ ty.paramTypes
+/-- Reads a `Canonical.Expr` as the Π-type `Π lets params . spine`, where each binder's type is
+    stored in its `Decl`. A binder without a type is given the type `_u`. -/
+partial def Canonical.Expr.toType (ty : Canonical.Expr) (ctx : List (Array String) := []) : CanonicalM TypeMVar := do
+  let decls := ty.lets ++ ty.params
+  let preferredNames := decls.map (·.name)
   return {
-    inputs := ← types.mapM fun x => (x.getD {
-      spine := { head := "_u", args := #[], premiseRules := #[] },
-      paramTypes := #[],
-      letTypes := #[]
-    }).toType (if preferredNames.isEmpty then ctx else preferredNames :: ctx),
-    output := ← ty.toTerm.toTerm ctx
+    inputs := ← decls.mapM fun d => (d.type.getD { spine := { head := "_u" } }).toType
+      (if preferredNames.isEmpty then ctx else preferredNames :: ctx),
+    output := ← ty.toTerm ctx
   }
 
 def disambiguate (str : String) (set : Std.HashSet String) : String := Id.run do
@@ -44,14 +43,17 @@ def disambiguate (str : String) (set : Std.HashSet String) : String := Id.run do
   name
 
 mutual
-  partial def MVar.toTerm (s : MVar) (ctx : List (Array String) := []) (set : Std.HashSet String := {}) : CanonicalM Canonical.Term := do
+  partial def MVar.toTerm (s : MVar) (ctx : List (Array String) := []) (set : Std.HashSet String := {}) : CanonicalM Canonical.Expr := do
     let mut set := set
     let mut disambiguated := #[]
     for name in s.preferredNames do
       let name := disambiguate name set
       set := set.insert name
       disambiguated := disambiguated.push name
-    return Canonical.Term.mk (disambiguated.map (Canonical.Var.mk ·)) #[] (← s.toSpine (if disambiguated.isEmpty then ctx else disambiguated :: ctx) set) #[]
+    return {
+      params := disambiguated.map ({ name := · })
+      spine := ← s.toSpine (if disambiguated.isEmpty then ctx else disambiguated :: ctx) set
+    }
 
   partial def MVar.toSpine (s : MVar) (ctx : List (Array String)) (set : Std.HashSet String) : CanonicalM Canonical.Spine := do
     match (← get).assignments[s.id]! with
@@ -74,12 +76,10 @@ partial def MVar.toString (s : MVar) : CanonicalM String := do
     let args := args.foldl (s!"{·} {·}") ""
     pure s!"(λ{params}. {name}{args})"
 
-def removeTypeInType (typ : Canonical.Typ) : Canonical.Typ :=
-  if let some idx := typ.lets.findIdx? (fun v => v.name == "Sort") then
-    let uType : Canonical.Typ := ⟨⟨#[], #[], ⟨"_u", #[], #[]⟩, #[]⟩, #[], #[]⟩
-    { typ with
-      lets := typ.lets.push ⟨⟨"_u"⟩, #[]⟩,
-      letTypes := (typ.letTypes.set! idx uType).push uType }
+def removeTypeInType (typ : Canonical.Expr) : Canonical.Expr :=
+  if let some idx := typ.lets.findIdx? (fun d => d.name == "Sort") then
+    let uType : Canonical.Expr := { spine := { head := "_u" } }
+    { typ with lets := (typ.lets.modify idx ({ · with type := some uType })).push { name := "_u", type := some uType } }
   else typ
 
 def startES : CanonicalM (List Block) := do
@@ -92,8 +92,8 @@ def startES : CanonicalM (List Block) := do
   let dummy := .vars 0 (some ⟨#[{ inputs := #[], output := mvar }], []⟩)
   return [dummy]
 
-def inhabit (typ : Canonical.Typ) (timeout : Nat) (count : Nat) : DfsM Canonical.CanonicalResult := do
-  let result : IO.Ref (Array Canonical.Term) ← IO.mkRef #[]
+def inhabit (typ : Canonical.Expr) (timeout : Nat) (count : Nat) : DfsM Canonical.CanonicalResult := do
+  let result : IO.Ref (Array Canonical.Expr) ← IO.mkRef #[]
   let tmvar ← typ.toType
   let es ← startES
   let typ := Typ.mk tmvar es
@@ -138,12 +138,14 @@ elab (name := canonicalSeq) "canonical_min" timeout_syntax:(num)? config:optConf
     else pure #[]
   let (premises, structs) ← Canonical.getPremises goal consts config
 
-  let (goal', reconstruct) ← Canonical.preprocess goal config structs
+  let (goal', reconstruct) ← Canonical.withArityUnfold config.monomorphize do
+    Canonical.preprocess goal config structs
   let (goal', reconstruct) ← preprocessIntros goal' reconstruct
 
-  let typ ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
-    Canonical.toCanonical (← goal'.getType) premises (structs.push ``Canonical.Pi) config
-  let typ := removeTypeInType typ
+  let name := ((← Lean.Elab.Term.getDeclName?).map toString).getD "proof"
+  let decl ← Canonical.withArityUnfold config.monomorphize do goal'.withContext do
+    Canonical.toCanonical name (← goal'.getType) premises (structs.push ``Canonical.Pi) config
+  let typ := removeTypeInType decl.type.get!
 
   if config.debug then
     Elab.admitGoal goal
