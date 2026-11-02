@@ -1,11 +1,11 @@
-{"version": "1.2.0",
+{"version": "1.3.0",
  "packagesDir": ".lake/packages",
  "packages":
  [{"url": "https://github.com/chasenorman/CanonicalLean",
    "type": "git",
    "subDir": null,
    "scope": "chasenorman",
-   "rev": "336841e4ef592ae3f669d79de91a4b91dbdbe38c",
+   "rev": "335a50ec1ff9b7e0db27fae435f1c3a3cb08fdc0",
    "name": "Canonical",
    "manifestFile": "lake-manifest.json",
    "inputRev": "master",
