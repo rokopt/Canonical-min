@@ -10,7 +10,7 @@ name = "CanonicalMin"
 name = "Canonical"
 scope = "rokopt"
 git = "https://github.com/rokopt/CanonicalLean"
-rev = "c57eb57d6baa5f884cca4f1f630068c5bd682a62"
+rev = "9b010ddaff06ad866dbb656b459bda07d623b9d0"
 
 [[lean_lib]]
 name = "Test"
